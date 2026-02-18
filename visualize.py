@@ -1,161 +1,244 @@
 # ============================================================
 #  visualize.py
-#  Show top layouts, training curves, and layout statistics
+#  Generate all plots and result images.
 # ============================================================
 
 import os
 import json
 import numpy as np
 import matplotlib
-matplotlib.use('Agg')   # no display needed
+matplotlib.use('Agg')
 import matplotlib.pyplot as plt
-import matplotlib.patches as mpatches
 from matplotlib.colors import ListedColormap
 
 import config
 
+BOARD = config.BOARD_SIZE
+OCEAN = '#0a1628'
+SHIP  = '#f0a500'
+GRID  = '#1e3a5f'
 
-def plot_layout(layout, ax, title="", score=None):
-    """Plot a single 10x10 layout on given axes."""
-    cmap = ListedColormap(['#1a3a5c', '#e8b84b'])  # ocean blue, ship gold
-    ax.imshow(layout, cmap=cmap, vmin=0, vmax=1, aspect='equal')
-    ax.set_xticks(range(config.BOARD_SIZE))
-    ax.set_yticks(range(config.BOARD_SIZE))
-    ax.set_xticklabels([chr(65+i) for i in range(config.BOARD_SIZE)], fontsize=7)
-    ax.set_yticklabels(range(1, config.BOARD_SIZE+1), fontsize=7)
+
+# ── Single layout renderer ───────────────────────────────────
+def plot_layout(layout, ax, title="", score=None, rank=None):
+    cmap = ListedColormap([OCEAN, SHIP])
+    ax.imshow(layout, cmap=cmap, vmin=0, vmax=1, aspect='equal',
+              interpolation='nearest')
+
+    # Grid lines
+    for i in range(BOARD + 1):
+        ax.axhline(i - 0.5, color=GRID, linewidth=0.5)
+        ax.axvline(i - 0.5, color=GRID, linewidth=0.5)
+
+    ax.set_xticks(range(BOARD))
+    ax.set_yticks(range(BOARD))
+    ax.set_xticklabels([chr(65+i) for i in range(BOARD)], fontsize=6, color='#aabbcc')
+    ax.set_yticklabels(range(1, BOARD+1), fontsize=6, color='#aabbcc')
     ax.tick_params(length=0)
     for spine in ax.spines.values():
-        spine.set_edgecolor('#334455')
+        spine.set_edgecolor(GRID)
 
-    label = title
+    label = ""
+    if rank is not None:
+        label += f"#{rank}  "
     if score is not None:
-        label += f"\n{score:.1f} turns"
-    ax.set_title(label, fontsize=9, pad=4)
+        label += f"{score:.1f}shots"
+    if title:
+        label = title + ("\n" + label if label else "")
+    ax.set_title(label, fontsize=8, pad=3, color='#ddeeff')
 
 
 def show_top_layouts(n=20, save_path=None):
-    """Plot the top N layouts from the scoring results."""
-    layouts_path = config.TOP_LAYOUTS_FILE
-    scores_path  = os.path.join(config.TOP_DIR, "top_10000_scores.npy")
-
-    if not os.path.exists(layouts_path):
-        print("[Viz] Top layouts not found. Run: python run.py score")
+    if not os.path.exists(config.TOP_LAYOUTS_FILE):
+        print("[Viz] Top layouts not found. Run: python run.py validate")
         return
 
-    layouts = np.load(layouts_path)[:n]
-    scores  = np.load(scores_path)[:n] if os.path.exists(scores_path) else [None]*n
+    layouts = np.load(config.TOP_LAYOUTS_FILE)[:n]
+    scores  = np.load(config.TOP_SCORES_FILE)[:n] if os.path.exists(config.TOP_SCORES_FILE) else [None]*n
+    meta    = {}
+    if os.path.exists(config.TOP_META_FILE):
+        with open(config.TOP_META_FILE) as f:
+            meta = json.load(f)
 
     cols = 5
     rows = (n + cols - 1) // cols
-    fig, axes = plt.subplots(rows, cols, figsize=(cols*2.5, rows*2.8))
-    fig.suptitle("Top Battleship Layouts", fontsize=14, fontweight='bold', y=1.01)
-    fig.patch.set_facecolor('#0d1f2d')
+    fig, axes = plt.subplots(rows, cols,
+                              figsize=(cols * 2.4, rows * 2.6),
+                              facecolor=OCEAN)
+    fig.suptitle(f"Top {n} Battleship Layouts\n"
+                 f"PDF {meta.get('pdf_games','?')} games + "
+                 f"RL {meta.get('rl_games','?')} games | "
+                 f"Weight {meta.get('pdf_weight','?')}/{meta.get('rl_weight','?')}",
+                 fontsize=10, color='white', y=1.01)
 
     axes_flat = axes.flatten() if n > 1 else [axes]
     for i, ax in enumerate(axes_flat):
+        ax.set_facecolor(OCEAN)
         if i < n:
-            plot_layout(layouts[i], ax, title=f"#{i+1}", score=scores[i])
+            plot_layout(layouts[i], ax, score=scores[i], rank=i+1)
         else:
             ax.axis('off')
 
     plt.tight_layout()
     out = save_path or os.path.join(config.TOP_DIR, "top_layouts.png")
-    plt.savefig(out, dpi=150, bbox_inches='tight', facecolor='#0d1f2d')
-    print(f"[Viz] Saved: {out}")
-    plt.close()
-
-
-def plot_training_curve(save_path=None):
-    """Plot avg turns and loss over training."""
-    log_path = os.path.join(config.LOG_DIR, "train_log.csv")
-    if not os.path.exists(log_path):
-        print("[Viz] Training log not found.")
-        return
-
-    data = np.genfromtxt(log_path, delimiter=',', names=True, skip_header=0)
-    if data.size == 0:
-        print("[Viz] Training log is empty.")
-        return
-
-    fig, (ax1, ax2) = plt.subplots(2, 1, figsize=(10, 7), facecolor='#0d1f2d')
-
-    # Smooth with rolling average
-    def smooth(x, w=50):
-        if len(x) < w:
-            return x
-        return np.convolve(x, np.ones(w)/w, mode='valid')
-
-    eps = data['episode']
-
-    # Turns plot
-    ax1.set_facecolor('#1a2a3a')
-    ax1.plot(eps[:len(smooth(data['avg_turns']))],
-             smooth(data['avg_turns']), color='#e8b84b', linewidth=1.5)
-    ax1.set_ylabel("Avg Turns to Win", color='white')
-    ax1.set_title("Training Progress", color='white', fontsize=13)
-    ax1.tick_params(colors='white')
-    ax1.set_xlabel("")
-    for spine in ax1.spines.values():
-        spine.set_edgecolor('#334455')
-
-    # Loss plot
-    ax2.set_facecolor('#1a2a3a')
-    ax2.plot(eps[:len(smooth(data['avg_loss']))],
-             smooth(data['avg_loss']), color='#5bc8af', linewidth=1.5)
-    ax2.set_ylabel("Training Loss", color='white')
-    ax2.set_xlabel("Episode", color='white')
-    ax2.tick_params(colors='white')
-    for spine in ax2.spines.values():
-        spine.set_edgecolor('#334455')
-
-    plt.tight_layout()
-    out = save_path or os.path.join(config.LOG_DIR, "training_curve.png")
-    plt.savefig(out, dpi=150, bbox_inches='tight', facecolor='#0d1f2d')
+    plt.savefig(out, dpi=150, bbox_inches='tight', facecolor=OCEAN)
     print(f"[Viz] Saved: {out}")
     plt.close()
 
 
 def layout_heatmap(save_path=None):
-    """Show heatmap of how often each cell is occupied in top 10K layouts."""
-    layouts_path = config.TOP_LAYOUTS_FILE
-    if not os.path.exists(layouts_path):
+    """Show which cells the top layouts occupy most often."""
+    if not os.path.exists(config.TOP_LAYOUTS_FILE):
         print("[Viz] Top layouts not found.")
         return
 
-    layouts = np.load(layouts_path)
-    heatmap = layouts.mean(axis=0)  # (10,10) fraction occupied
+    layouts = np.load(config.TOP_LAYOUTS_FILE)
+    heatmap = layouts.mean(axis=0)
 
-    fig, ax = plt.subplots(figsize=(6, 5.5), facecolor='#0d1f2d')
-    im = ax.imshow(heatmap, cmap='hot', vmin=0, vmax=1)
-    plt.colorbar(im, ax=ax, label='Fraction occupied')
-    ax.set_title("Cell Occupation Heatmap\n(Top 10,000 layouts)", color='white', fontsize=12)
-    ax.set_xticks(range(config.BOARD_SIZE))
-    ax.set_xticklabels([chr(65+i) for i in range(config.BOARD_SIZE)], color='white')
-    ax.set_yticks(range(config.BOARD_SIZE))
-    ax.set_yticklabels(range(1, config.BOARD_SIZE+1), color='white')
+    fig, ax = plt.subplots(figsize=(6, 5.5), facecolor=OCEAN)
+    ax.set_facecolor(OCEAN)
+    im = ax.imshow(heatmap, cmap='hot', vmin=0, vmax=1, interpolation='nearest')
+    cbar = plt.colorbar(im, ax=ax)
+    cbar.set_label('Fraction occupied', color='white')
+    cbar.ax.yaxis.set_tick_params(color='white')
+    plt.setp(plt.getp(cbar.ax.axes, 'yticklabels'), color='white')
+
+    ax.set_title(f"Cell Occupation Heatmap\n(Top {len(layouts):,} layouts)",
+                 color='white', fontsize=12)
+    ax.set_xticks(range(BOARD))
+    ax.set_xticklabels([chr(65+i) for i in range(BOARD)], color='white')
+    ax.set_yticks(range(BOARD))
+    ax.set_yticklabels(range(1, BOARD+1), color='white')
 
     out = save_path or os.path.join(config.TOP_DIR, "heatmap.png")
-    plt.savefig(out, dpi=150, bbox_inches='tight', facecolor='#0d1f2d')
+    plt.savefig(out, dpi=150, bbox_inches='tight', facecolor=OCEAN)
     print(f"[Viz] Saved: {out}")
     plt.close()
 
 
-def print_layout_ascii(layout, idx=0, score=None):
-    """Print a single layout to terminal."""
+def plot_ga_curve(save_path=None):
+    log_path = os.path.join(config.LOG_DIR, "ga_log.csv")
+    if not os.path.exists(log_path):
+        print("[Viz] GA log not found.")
+        return
+
+    data = np.genfromtxt(log_path, delimiter=',', names=True)
+    if data.size == 0:
+        return
+
+    fig, ax = plt.subplots(figsize=(10, 5), facecolor=OCEAN)
+    ax.set_facecolor('#0d1f35')
+
+    ax.plot(data['generation'], data['best_score'],
+            color=SHIP,     linewidth=2,   label='Best layout score')
+    ax.plot(data['generation'], data['mean_score'],
+            color='#5bc8af', linewidth=1.5, label='Mean population score')
+    ax.plot(data['generation'], data['top10_mean'],
+            color='#8899ff', linewidth=1.5, linestyle='--', label='Top-10 mean score')
+
+    ax.set_xlabel('Generation', color='white')
+    ax.set_ylabel('Avg shots survived (vs PDF bot)', color='white')
+    ax.set_title('Genetic Algorithm Convergence', color='white', fontsize=13)
+    ax.legend(facecolor='#1a2a3a', labelcolor='white', fontsize=9)
+    ax.tick_params(colors='white')
+    for spine in ax.spines.values():
+        spine.set_edgecolor(GRID)
+
+    out = save_path or os.path.join(config.LOG_DIR, "ga_curve.png")
+    plt.savefig(out, dpi=150, bbox_inches='tight', facecolor=OCEAN)
+    print(f"[Viz] Saved: {out}")
+    plt.close()
+
+
+def plot_rl_curve(save_path=None):
+    log_path = os.path.join(config.LOG_DIR, "rl_log.csv")
+    if not os.path.exists(log_path):
+        print("[Viz] RL log not found. (RL training may not have run yet)")
+        return
+
+    data = np.genfromtxt(log_path, delimiter=',', names=True)
+    if data.size == 0:
+        return
+
+    def smooth(x, w=50):
+        if len(x) < w: return x
+        return np.convolve(x, np.ones(w)/w, mode='valid')
+
+    eps = data['episode']
+
+    fig, (ax1, ax2) = plt.subplots(2, 1, figsize=(10, 7), facecolor=OCEAN)
+
+    ax1.set_facecolor('#0d1f35')
+    ax1.plot(eps[:len(smooth(data['avg_turns']))],
+             smooth(data['avg_turns']), color=SHIP, linewidth=1.5)
+    ax1.set_ylabel('Avg turns to win', color='white')
+    ax1.set_title('RL Training Progress', color='white', fontsize=13)
+    ax1.tick_params(colors='white')
+    for spine in ax1.spines.values(): spine.set_edgecolor(GRID)
+
+    ax2.set_facecolor('#0d1f35')
+    ax2.plot(eps[:len(smooth(data['avg_loss']))],
+             smooth(data['avg_loss']), color='#5bc8af', linewidth=1.5)
+    ax2.set_ylabel('Training loss', color='white')
+    ax2.set_xlabel('Episode', color='white')
+    ax2.tick_params(colors='white')
+    for spine in ax2.spines.values(): spine.set_edgecolor(GRID)
+
+    out = save_path or os.path.join(config.LOG_DIR, "rl_curve.png")
+    plt.savefig(out, dpi=150, bbox_inches='tight', facecolor=OCEAN)
+    print(f"[Viz] Saved: {out}")
+    plt.close()
+
+
+def print_layout_ascii(layout, rank=0, pdf_score=None, combined=None):
     cols = "  A B C D E F G H I J"
     sep  = "  " + "─" * 19
-    print(f"\n  Layout #{idx+1}" + (f"  (score: {score:.1f})" if score else ""))
+    print(f"\n  Layout #{rank}" +
+          (f"  PDF={pdf_score:.1f}" if pdf_score else "") +
+          (f"  combined={combined:.4f}" if combined else ""))
     print(cols)
     print(sep)
-    for r in range(config.BOARD_SIZE):
+    for r in range(BOARD):
         row_str = f"{r+1:>2}│"
-        for c in range(config.BOARD_SIZE):
+        for c in range(BOARD):
             row_str += "█ " if layout[r, c] == 1 else "· "
         print(row_str)
 
 
+def print_summary():
+    """Print text summary of results."""
+    if not os.path.exists(config.TOP_META_FILE):
+        print("[Viz] No results yet. Run the full pipeline first.")
+        return
+
+    with open(config.TOP_META_FILE) as f:
+        meta = json.load(f)
+
+    print("\n" + "═"*50)
+    print("  HYBRID BATTLESHIP AI — FINAL RESULTS")
+    print("═"*50)
+    print(f"  Total top layouts     : {meta['n_layouts']:,}")
+    print(f"  PDF games per layout  : {meta['pdf_games']}")
+    print(f"  RL games per layout   : {meta['rl_games']}")
+    print(f"  RL model used         : {meta['rl_model_used']}")
+    print(f"  Best PDF score        : {meta['best_pdf_score']:.2f} shots survived")
+    print(f"  Best RL score         : {meta['best_rl_score']:.2f} shots survived")
+    print(f"  Mean PDF (top 100)    : {meta['mean_pdf_top100']:.2f} shots survived")
+    print(f"  Mean PDF (all 10K)    : {meta['mean_pdf_all']:.2f} shots survived")
+    print("═"*50)
+
+    if os.path.exists(config.TOP_LAYOUTS_FILE):
+        layouts = np.load(config.TOP_LAYOUTS_FILE)
+        scores  = np.load(config.TOP_SCORES_FILE)
+        print(f"\n  Top 3 layouts:\n")
+        for i in range(min(3, len(layouts))):
+            print_layout_ascii(layouts[i], rank=i+1, combined=scores[i])
+
+
 if __name__ == "__main__":
-    plot_training_curve()
+    print_summary()
+    plot_ga_curve()
+    plot_rl_curve()
     show_top_layouts(n=20)
     layout_heatmap()
-    print("[Viz] Done!")
+    print("\n[Viz] All done!")

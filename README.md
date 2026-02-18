@@ -1,107 +1,149 @@
-# Battleship AI — GTX 1650 Edition
+# Hybrid Battleship AI — GTX 1650 Edition
 
-Find the top 10,000 most defensible Battleship layouts using self-play
-reinforcement learning. Fully stop/resume safe — Ctrl+C anytime.
+Combines the best of two approaches to find the top 10,000 hardest-to-sink
+Battleship layouts:
+
+| | Their Approach | Our Approach | **This Hybrid** |
+|---|---|---|---|
+| Attacker | PDF Bot (optimal) | RL model | **Both** |
+| Optimizer | Genetic Algorithm | Tournament filter | **GA (breeds, not just filters)** |
+| Validation | Single judge | Single judge | **Dual judge (PDF + RL combined)** |
+| Time | ~12-24h | ~3-4 days | **~20-48h** |
 
 ---
 
 ## Quick Start
 
 ```bash
-# 1. Install dependencies
-python run.py setup
-
-# 2. Train the AI  (2–3 days, fully resumable)
-python run.py train
-
-# 3. Find top 10,000 layouts  (~17 hours, resumable per-round)
-python run.py score
-
-# 4. View results
-python run.py visualize
+python run.py setup       # check hardware, install deps
+python run.py ga          # Phase 1: breed layouts (~16h, Ctrl+C resumable)
+python run.py validate    # Phase 3: final scoring (~3h)
+python run.py visualize   # generate plots
 ```
 
-Or run everything automatically:
+For best results, also run RL training between GA and validate:
 ```bash
-python run.py all
+python run.py train_rl    # Phase 2: optional, improves validation (~12-24h)
 ```
+
+Check progress anytime: `python run.py status`
+
+---
+
+## How Each Phase Works
+
+### Phase 1: Genetic Algorithm + PDF Bot (CPU)
+
+The PDF bot is the mathematically near-optimal Battleship attacker.
+After every shot it calculates exactly which cells are most likely to
+contain a ship given all previous hits/misses — no training needed.
+
+The GA uses it as a fitness judge:
+
+```
+Generation 0:  10,000 random valid layouts
+   ↓  Score each against PDF bot (100 games)
+   ↓  Keep top 50% as parents
+   ↓  Breed: take ships from Parent A + Parent B (crossover)
+   ↓  Mutate: randomly move one ship (15% chance)
+Generation 1:  new 10,000 layouts (smarter than gen 0)
+   ↓  ...
+Generation 500: converged near-optimal population
+```
+
+Key insight: GA **breeds** good layouts together, not just filters them.
+If layout A has great ship dispersion and layout B avoids the center,
+their child inherits both traits.
+
+### Phase 2: RL Training (GPU, optional)
+
+A CNN learns to attack by playing thousands of games.
+- First 200K episodes: warms up against random layouts with the PDF bot
+  strategy as teacher signal
+- Remaining episodes: pure self-play for discovering non-obvious patterns
+
+The RL model becomes a **second independent attacker** with different
+blind spots than the PDF bot — catching layouts that fooled the PDF bot.
+
+### Phase 3: Dual Validation (CPU + GPU)
+
+Re-scores all GA survivors against both attackers with many more games:
+- PDF bot: 500 games per layout (rigorous statistical estimate)
+- RL model: 200 games per layout (if model trained)
+
+Final score = 0.65 × PDF_score + 0.35 × RL_score
+
+Layouts that fool both attackers rank highest.
 
 ---
 
 ## Stop & Resume
 
-**Training:**  
-Press `Ctrl+C` at any time. Progress is saved every 50,000 episodes.  
-Re-run `python run.py train` — it picks up exactly where it stopped.
+Every phase saves its state automatically:
 
-**Scoring:**  
-Press `Ctrl+C` at any time. Each completed round is saved.  
-Re-run `python run.py score` — it skips completed rounds.
+| Phase | Saves every | Resume behavior |
+|---|---|---|
+| GA | 10 generations | Resumes from exact generation |
+| RL Training | 50K episodes | Resumes from exact episode |
+| Validation | Each batch | Resumes from last saved batch |
 
-Check current progress anytime:
-```bash
-python run.py status
-```
+Just press `Ctrl+C` and re-run the same command.
 
 ---
 
-## Project Structure
+## File Structure
 
 ```
-battleship_ai/
-├── run.py               ← START HERE — master entry point
-├── config.py            ← all settings (edit to tune)
-├── model.py             ← CNN neural network
-├── game_engine.py       ← fast game simulation
-├── layout_generator.py  ← generates valid layouts
-├── train.py             ← self-play RL training
-├── score.py             ← evolutionary tournament
-├── visualize.py         ← plots and heatmaps
-├── requirements.txt
-│
-├── data/
-│   └── layouts.bin      ← all 15B layouts (~195GB, optional)
+battleship_hybrid/
+├── run.py                ← START HERE
+├── config.py             ← all settings (tune here)
+├── bitboard.py           ← fast integer-based board operations
+├── pdf_bot.py            ← probability density attacker
+├── genetic_algorithm.py  ← GA optimizer
+├── model.py              ← RL CNN model
+├── train_rl.py           ← RL self-play training
+├── validate.py           ← dual scoring phase
+├── visualize.py          ← plots and heatmaps
 │
 ├── checkpoints/
-│   ├── model_latest.pt  ← latest trained model
-│   ├── train_state.json ← training progress
-│   └── score_state.json ← scoring progress
+│   ├── ga_state.json         ← GA progress
+│   ├── ga_top_layouts.npy    ← GA output layouts
+│   ├── rl_model_latest.pt    ← RL model weights
+│   └── rl_train_state.json   ← RL training progress
 │
 ├── logs/
-│   ├── train_log.csv    ← episode-by-episode stats
-│   └── training_curve.png
+│   ├── ga_log.csv
+│   ├── ga_curve.png
+│   ├── rl_log.csv
+│   └── rl_curve.png
 │
 └── top_layouts/
-    ├── top_10000.npy        ← FINAL OUTPUT (shape: 10000,10,10)
-    ├── top_10000_scores.npy ← scores for each layout
-    ├── top_layouts.png      ← visual grid of top 20
-    └── heatmap.png          ← cell occupation heatmap
+    ├── top_10000.npy         ← FINAL OUTPUT
+    ├── top_10000_scores.npy
+    ├── top_10000_meta.json
+    ├── top_layouts.png       ← visual grid of top 20
+    └── heatmap.png           ← cell occupation heatmap
 ```
 
 ---
 
-## Hardware Requirements
+## Tuning for Your Hardware
 
-| Component | Minimum | Your Setup |
-|-----------|---------|------------|
-| GPU | Any NVIDIA | GTX 1650 (4GB) ✓ |
-| RAM | 6GB | 8GB ✓ |
-| Storage | 50GB | 512GB ✓ |
+Edit `config.py`:
 
-**Note:** Layout generation (`python run.py generate`) requires 220GB free.  
-If you don't have space, skip it — scoring samples layouts on-the-fly.
+```python
+# Fewer CPU workers if RAM is low
+GA_WORKERS = 2        # default 4
 
----
+# Fewer generations for faster results
+GA_GENERATIONS = 100  # default 500
 
-## Estimated Timelines (GTX 1650)
+# Reduce if VRAM errors occur
+RL_BATCH_SIZE = 128   # default 256
 
-| Step | Time |
-|------|------|
-| Setup | 2 minutes |
-| Generate all layouts (optional) | 4–6 hours (CPU) |
-| Train 5M episodes | 2–3 days |
-| Score (3 rounds) | ~17 hours |
-| Visualize | 1 minute |
+# Skip RL entirely — GA + PDF validation is still excellent
+# Just run: ga → validate → visualize
+```
 
 ---
 
@@ -111,33 +153,12 @@ If you don't have space, skip it — scoring samples layouts on-the-fly.
 import numpy as np
 
 # Load top 10,000 layouts
-layouts = np.load("top_layouts/top_10000.npy")   # shape: (10000, 10, 10)
+layouts = np.load("top_layouts/top_10000.npy")   # (10000, 10, 10)
 scores  = np.load("top_layouts/top_10000_scores.npy")
 
-# The #1 best layout
-best_layout = layouts[0]   # (10, 10) array, 1=ship, 0=water
-print(f"Best layout survives avg {scores[0]:.1f} turns against trained AI")
-
-# Display it
-for row in best_layout:
+# Best layout
+best = layouts[0]
+print(f"Score: {scores[0]:.4f}")
+for row in best:
     print("".join("█" if c else "·" for c in row))
-```
-
----
-
-## Tuning config.py
-
-```python
-# Make training faster (less accurate)
-TOTAL_EPISODES = 1_000_000   # default: 5M
-BATCH_SIZE = 128             # default: 256
-
-# Make scoring faster (less accurate top-10K)
-ROUND1_SAMPLE = 1_000_000    # default: 5M
-ROUND1_GAMES  = 10           # default: 20
-
-# If VRAM errors occur
-BATCH_SIZE = 64
-SCORE_BATCH_SIZE = 512
-MIXED_PRECISION = False
 ```
